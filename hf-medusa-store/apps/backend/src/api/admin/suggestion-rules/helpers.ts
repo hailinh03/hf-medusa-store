@@ -1,18 +1,17 @@
 import { MedusaContainer } from '@medusajs/framework/types'
+import { invalidateProductSuggestions } from '../../../modules/suggestive-selling/cache'
 
 /**
- * Cache-invalidation hook for suggestion rules.
- *
- * Day 2: interface only — logs intent. Day 3 wires the real Redis invalidation
- * together with Sơn's cache adapter (keys `product:{id}:suggestions`,
- * `cart:{id}:suggestions`, SRS §7.1 step 7 / SUGG-005).
+ * Invalidate cached suggestions affected by a rule change (SRS §7.1 / SUGG-005).
+ * Product-level rules invalidate their source product's cache key; cart/category
+ * rules have no single source product (their cache is invalidated on cart change
+ * by the cart.updated subscriber instead).
  */
 export async function invalidateSuggestionCache(
   scope: MedusaContainer,
-  ruleId: string
+  rule: { source_product_id?: string | null }
 ): Promise<void> {
-  const logger = scope.resolve('logger')
-  // TODO(Day 3, with Sơn): resolve cacheService and delete affected
-  // product:{id}:suggestions / cart:{id}:suggestions keys for this rule.
-  logger.debug(`[suggestive] cache invalidation requested for rule ${ruleId} (no-op until Day 3)`)
+  if (rule?.source_product_id) {
+    await invalidateProductSuggestions(scope, rule.source_product_id)
+  }
 }

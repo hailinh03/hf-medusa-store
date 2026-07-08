@@ -55,7 +55,7 @@ export const PUT = async (
   const suggestion_rule = await service.retrieveSuggestionRule(id, {
     relations: ['items', 'conditions'],
   })
-  await invalidateSuggestionCache(req.scope, id)
+  await invalidateSuggestionCache(req.scope, suggestion_rule)
   res.json({ suggestion_rule })
 }
 
@@ -67,8 +67,10 @@ export const DELETE = async (req: MedusaRequest, res: MedusaResponse) => {
   const service: any = req.scope.resolve(SUGGESTIVE_SELLING_MODULE)
   const { id } = req.params
 
+  // Capture source_product_id before soft-delete so we can invalidate its cache.
+  const rule = await service.retrieveSuggestionRule(id).catch(() => null)
   await service.softDeleteSuggestionRules(id)
-  await invalidateSuggestionCache(req.scope, id)
+  if (rule) await invalidateSuggestionCache(req.scope, rule)
 
   res.json({ id, object: 'suggestion_rule', deleted: true })
 }

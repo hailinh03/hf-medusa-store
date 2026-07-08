@@ -41,6 +41,6 @@ export const POST = async (
     conditions,
   })
 
-  await invalidateSuggestionCache(req.scope, suggestion_rule.id)
+  await invalidateSuggestionCache(req.scope, suggestion_rule)
   res.status(201).json({ suggestion_rule })
 }
