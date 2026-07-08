@@ -23,10 +23,12 @@ export default async function seedSuggestiveSelling({ container }: ExecArgs) {
   const productModule = container.resolve(Modules.PRODUCT)
   const ss: any = container.resolve(SUGGESTIVE_SELLING_MODULE)
 
-  const names = Array.from(
-    new Set([...Object.keys(COMPLEMENT_MAP), ...Object.values(COMPLEMENT_MAP).flat()])
+  // List all categories then match by name in memory — array-filter on `name`
+  // isn't reliably translated to an IN query by the module service.
+  const categories = await productModule.listProductCategories(
+    {},
+    { select: ['id', 'name'], take: 1000 }
   )
-  const categories = await productModule.listProductCategories({ name: names })
   const idByName = new Map(categories.map((c: any) => [c.name, c.id]))
 
   const rows: Array<{
