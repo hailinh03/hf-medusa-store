@@ -467,6 +467,22 @@
           ],
           "mappedType": "enum"
         },
+        "source_product_id": {
+          "name": "source_product_id",
+          "type": "text",
+          "unsigned": false,
+          "autoincrement": false,
+          "primary": false,
+          "nullable": true,
+          "unique": false,
+          "length": null,
+          "precision": null,
+          "scale": null,
+          "default": null,
+          "comment": null,
+          "enumItems": [],
+          "mappedType": "text"
+        },
         "priority": {
           "name": "priority",
           "type": "integer",
@@ -600,6 +616,15 @@
           "primary": false,
           "unique": false,
           "expression": "CREATE INDEX IF NOT EXISTS \"IDX_suggestion_rule_type_is_active_priority\" ON \"suggestion_rule\" (\"type\", \"is_active\", \"priority\") WHERE deleted_at IS NULL"
+        },
+        {
+          "keyName": "IDX_suggestion_rule_source_product_id_is_active",
+          "columnNames": [],
+          "composite": false,
+          "constraint": false,
+          "primary": false,
+          "unique": false,
+          "expression": "CREATE INDEX IF NOT EXISTS \"IDX_suggestion_rule_source_product_id_is_active\" ON \"suggestion_rule\" (\"source_product_id\", \"is_active\") WHERE deleted_at IS NULL"
         },
         {
           "keyName": "suggestion_rule_pkey",
