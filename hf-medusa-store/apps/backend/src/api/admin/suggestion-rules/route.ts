@@ -2,6 +2,7 @@ import { MedusaRequest, MedusaResponse } from '@medusajs/framework/http'
 import { SUGGESTIVE_SELLING_MODULE } from '../../../modules/suggestive-selling'
 import { CreateSuggestionRuleBody } from './validators'
 import { invalidateSuggestionCache, replaceSourceProductLinks, withSourceProducts } from './helpers'
+import { AdminErrors } from '../../../lib/errors'
 
 /**
  * GET /admin/suggestion-rules — list rules (SRS §6.1).
@@ -35,6 +36,15 @@ export const POST = async (
 ) => {
   const service: any = req.scope.resolve(SUGGESTIVE_SELLING_MODULE)
   const { items, conditions, source_product_ids, ...ruleData } = req.validatedBody
+
+  const conflict = await service.findPriorityConflict(
+    ruleData.type,
+    ruleData.tier,
+    ruleData.priority
+  )
+  if (conflict) {
+    throw AdminErrors.rulePriorityConflict(conflict)
+  }
 
   const createdRule = await service.createSuggestionRules({
     ...ruleData,

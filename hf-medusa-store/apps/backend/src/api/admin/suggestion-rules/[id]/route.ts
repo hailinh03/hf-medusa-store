@@ -7,6 +7,7 @@ import {
   replaceSourceProductLinks,
   withSourceProducts,
 } from '../helpers'
+import { AdminErrors } from '../../../../lib/errors'
 
 /**
  * GET /admin/suggestion-rules/:id — retrieve one rule with items + conditions.
@@ -32,6 +33,23 @@ export const PUT = async (
   const { id } = req.params
   const { items, conditions, source_product_ids, ...ruleData } = req.validatedBody
   const previousSourceProductIds = await getSourceProductIds(req.scope, id)
+
+  if (
+    ruleData.type !== undefined ||
+    ruleData.tier !== undefined ||
+    ruleData.priority !== undefined
+  ) {
+    const current = await service.retrieveSuggestionRule(id)
+    const conflict = await service.findPriorityConflict(
+      ruleData.type ?? current.type,
+      ruleData.tier ?? current.tier,
+      ruleData.priority ?? current.priority,
+      id
+    )
+    if (conflict) {
+      throw AdminErrors.rulePriorityConflict(conflict)
+    }
+  }
 
   if (Object.keys(ruleData).length) {
     await service.updateSuggestionRules({ id, ...ruleData })

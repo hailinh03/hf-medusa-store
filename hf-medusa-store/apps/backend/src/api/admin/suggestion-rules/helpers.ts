@@ -1,6 +1,6 @@
 import { MedusaContainer } from '@medusajs/framework/types'
 import { ContainerRegistrationKeys, Modules } from '@medusajs/framework/utils'
-import { invalidateProductSuggestions } from '../../../modules/suggestive-selling/cache'
+import { invalidateProductSuggestions } from '../../../lib/suggestion-cache'
 import { SUGGESTIVE_SELLING_MODULE } from '../../../modules/suggestive-selling'
 
 type SourceProduct = {
