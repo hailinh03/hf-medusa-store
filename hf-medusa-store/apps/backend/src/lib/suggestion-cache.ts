@@ -1,4 +1,4 @@
-import { Modules } from "@medusajs/framework/utils";
+import { ContainerRegistrationKeys, Modules } from "@medusajs/framework/utils";
 import {
   SUGGESTION_CACHE_TTL,
   dismissKey,
@@ -7,12 +7,12 @@ import {
 } from "../modules/suggestive-selling/constants";
 
 /**
- * Cache + dismissal helpers — SPEC A.9 / D6 / BR-06.
+ * Cache + dismissal helpers â€” SPEC A.9 / D6 / BR-06.
  * Cache is optional (D11): if the CACHE module is absent, all ops no-op safely.
  * Dismissals are session-scoped server-side state (never in shared result cache).
  */
 
-const DISMISS_TTL = 24 * 60 * 60; // ≤24h (D6)
+const DISMISS_TTL = 24 * 60 * 60; // â‰¤24h (D6)
 
 function cache(container: any): any | null {
   try {
@@ -72,6 +72,27 @@ export async function invalidateProductSuggestions(
   const c = cache(container);
   if (!c) return;
   await c.invalidate(productCacheKey(productId));
+}
+
+/** Invalidate product-suggestion caches for every product in a source category. */
+export async function invalidateCategorySuggestions(
+  container: any,
+  categoryId: string,
+): Promise<void> {
+  const query = container.resolve(ContainerRegistrationKeys.QUERY);
+  const { data } = await query.graph({
+    entity: "product",
+    fields: ["id", "categories.id"],
+    pagination: { take: 5000 },
+  });
+  const productIds = (data ?? [])
+    .filter((product: any) =>
+      (product.categories ?? []).some((category: any) => category.id === categoryId),
+    )
+    .map((product: any) => product.id);
+  await Promise.all(productIds.map((productId: string) =>
+    invalidateProductSuggestions(container, productId),
+  ));
 }
 
 export { SUGGESTION_CACHE_TTL };

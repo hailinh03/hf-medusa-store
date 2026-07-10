@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Standardized business errors - API_CONTRACT section 3 / SPEC C.1.
  *
  * `BusinessError` carries a machine `code`, a Vietnamese `customer_message`
@@ -104,6 +104,13 @@ export const AdminErrors = {
       type: "conflict",
       message: "(source_category, complement_category) pair already exists",
       customerMessage: "This category complement pair already exists.",
+    }),  categoryDisplayOrderConflict: (displayOrder: number) =>
+    new BusinessError({
+      code: "CATEGORY_DISPLAY_ORDER_CONFLICT",
+      type: "conflict",
+      message: `display_order ${displayOrder} is already used for this source category`,
+      customerMessage: `Display order ${displayOrder} is already used for this source category.`,
+      details: { display_order: displayOrder },
     }),
 } as const;
 

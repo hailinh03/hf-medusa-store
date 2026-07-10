@@ -1,4 +1,4 @@
-﻿import { MedusaRequest, MedusaResponse } from '@medusajs/framework/http'
+import { MedusaRequest, MedusaResponse } from '@medusajs/framework/http'
 import { SUGGESTIVE_SELLING_MODULE } from '../../../modules/suggestive-selling'
 import { CreateSuggestionRuleBody } from './validators'
 import { findPriorityConflict, invalidateSuggestionCache, replaceSourceProductLinks, withSourceProducts } from './helpers'
@@ -11,9 +11,10 @@ import { AdminErrors } from '../../../lib/errors'
 export const GET = async (req: MedusaRequest, res: MedusaResponse) => {
   const service: any = req.scope.resolve(SUGGESTIVE_SELLING_MODULE)
 
-  const { type, is_active, limit = '50', offset = '0' } = req.query as Record<string, string>
+  const { type, tier, is_active, limit = '50', offset = '0' } = req.query as Record<string, string>
   const filters: Record<string, unknown> = {}
   if (type) filters.type = type
+  if (tier) filters.tier = tier
   if (is_active !== undefined) filters.is_active = is_active === 'true'
 
   const [rules, count] = await service.listAndCountSuggestionRules(filters, {

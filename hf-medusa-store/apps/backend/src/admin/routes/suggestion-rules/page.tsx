@@ -1,4 +1,4 @@
-﻿import { defineRouteConfig } from '@medusajs/admin-sdk'
+import { defineRouteConfig } from '@medusajs/admin-sdk'
 import { Sparkles } from '@medusajs/icons'
 import {
   Container,
@@ -6,6 +6,7 @@ import {
   Button,
   Checkbox,
   Table,
+  Tabs,
   Badge,
   Drawer,
   Input,
@@ -40,6 +41,8 @@ type RuleForm = {
   source_product_ids: string[]
   priority: number
   items: ItemInput[]
+  source_category_id: string
+  complement_category_ids: string[]
 }
 
 const EMPTY: RuleForm = {
@@ -49,36 +52,116 @@ const EMPTY: RuleForm = {
   source_product_ids: [],
   priority: 0,
   items: [{ suggested_product_id: '', custom_label: '' }],
+  source_category_id: '',
+  complement_category_ids: [],
 }
+
+const PAGE_SIZE = 10
 
 const SuggestionRulesPage = () => {
   const qc = useQueryClient()
   const prompt = usePrompt()
   const [open, setOpen] = useState(false)
   const [editingId, setEditingId] = useState<string | null>(null)
+  const [editingComplementId, setEditingComplementId] = useState<string | null>(null)
   const [form, setForm] = useState<RuleForm>(EMPTY)
   const [productSearch, setProductSearch] = useState('')
+  const [activeTab, setActiveTab] = useState<'manual' | 'category'>('manual')
+  const [rulePage, setRulePage] = useState(0)
+  const [mappingPage, setMappingPage] = useState(0)
 
   const { data, isLoading } = useQuery({
-    queryKey: ['suggestion-rules'],
-    queryFn: () => api('/suggestion-rules?limit=100'),
+    queryKey: ['suggestion-rules', rulePage],
+    queryFn: () =>
+      api(`/suggestion-rules?type=product&tier=manual&limit=${PAGE_SIZE}&offset=${rulePage * PAGE_SIZE}`),
   })
   const { data: productData } = useQuery({
     queryKey: ['products-mini'],
     queryFn: () => api('/products?limit=200&fields=id,title'),
   })
+  const { data: categoryData } = useQuery({
+    queryKey: ['product-categories-mini'],
+    queryFn: () => api('/product-categories?limit=200&fields=id,name'),
+  })
+  const { data: complementData } = useQuery({
+    queryKey: ['category-complements', mappingPage],
+    queryFn: () =>
+      api(`/category-complements?limit=${PAGE_SIZE}&offset=${mappingPage * PAGE_SIZE}`),
+  })
   const products = productData?.products ?? []
+  const categories = categoryData?.product_categories ?? []
   const titleById = useMemo(
     () => new Map(products.map((p: any) => [p.id, p.title])),
     [products]
   )
+  const categoryNameById = useMemo(
+    () => new Map(categories.map((category: any) => [category.id, category.name])),
+    [categories]
+  )
+  const categoryComplements = complementData?.category_complements ?? []
+  const categoryGroups = useMemo(() => {
+    const groups = new Map<string, any[]>()
+    for (const mapping of categoryComplements) {
+      const current = groups.get(mapping.source_category_id) ?? []
+      current.push(mapping)
+      groups.set(mapping.source_category_id, current)
+    }
+    return [...groups.entries()]
+      .map(([sourceCategoryId, mappings]) => ({
+        source_category_id: sourceCategoryId,
+        mappings: mappings.slice().sort((a, b) => a.display_order - b.display_order),
+      }))
+      .sort((a, b) =>
+        String(categoryNameById.get(a.source_category_id) ?? a.source_category_id).localeCompare(
+          String(categoryNameById.get(b.source_category_id) ?? b.source_category_id)
+        )
+      )
+  }, [categoryComplements, categoryNameById])
+  const visibleCategoryGroups = categoryGroups.slice(
+    mappingPage * PAGE_SIZE,
+    (mappingPage + 1) * PAGE_SIZE
+  )
 
   const save = useMutation({
     mutationFn: async () => {
+      if (form.tier === 'behavioral') {
+        throw new Error('Behavioral suggestions are available in Phase 2.')
+      }
+
+      if (form.tier === 'category') {
+        if (!form.source_category_id || !form.complement_category_ids.length) {
+          throw new Error('Select a source category and at least one complement category.')
+        }
+        if (editingComplementId) {
+          return api(`/category-complements/${editingComplementId}`, {
+            method: 'PUT',
+            body: JSON.stringify({
+              source_category_id: form.source_category_id,
+              complement_category_id: form.complement_category_ids[0],
+              display_order: Number(form.priority) || 0,
+              is_active: true,
+            }),
+          })
+        }
+        return Promise.all(
+          form.complement_category_ids.map((complementCategoryId, index) =>
+            api('/category-complements', {
+              method: 'POST',
+              body: JSON.stringify({
+                source_category_id: form.source_category_id,
+                complement_category_id: complementCategoryId,
+                display_order: (Number(form.priority) || 0) + index,
+                is_active: true,
+              }),
+            })
+          )
+        )
+      }
+
       const payload = {
         name: form.name,
         type: form.type,
-        tier: form.tier,
+        tier: 'manual' as const,
         source_product_ids: form.type === 'product' ? form.source_product_ids : [],
         priority: Number(form.priority) || 0,
         items: form.items
@@ -95,8 +178,9 @@ const SuggestionRulesPage = () => {
         : api('/suggestion-rules', { method: 'POST', body: JSON.stringify(payload) })
     },
     onSuccess: () => {
-      toast.success(editingId ? 'Rule updated' : 'Rule created')
+      toast.success(form.tier === 'category' ? (editingComplementId ? 'Category mapping updated' : 'Category mappings created') : editingId ? 'Rule updated' : 'Rule created')
       qc.invalidateQueries({ queryKey: ['suggestion-rules'] })
+      qc.invalidateQueries({ queryKey: ['category-complements'] })
       setOpen(false)
     },
     onError: (e: any) => toast.error(e.message),
@@ -107,17 +191,39 @@ const SuggestionRulesPage = () => {
     onSuccess: () => {
       toast.success('Rule deleted')
       qc.invalidateQueries({ queryKey: ['suggestion-rules'] })
+      qc.invalidateQueries({ queryKey: ['category-complements'] })
     },
     onError: (e: any) => toast.error(e.message),
   })
 
-  const openCreate = () => {
+  const removeComplement = useMutation({
+    mutationFn: (id: string) => api(`/category-complements/${id}`, { method: 'DELETE' }),
+    onSuccess: () => {
+      toast.success('Category mapping deleted')
+      qc.invalidateQueries({ queryKey: ['category-complements'] })
+    },
+    onError: (error: any) => toast.error(error.message),
+  })
+
+  const onDeleteComplement = async (mapping: any) => {
+    const sourceName = categoryNameById.get(mapping.source_category_id) ?? mapping.source_category_id
+    const complementName =
+      categoryNameById.get(mapping.complement_category_id) ?? mapping.complement_category_id
+    const ok = await prompt({
+      title: 'Delete category complement',
+      description: `Remove "${complementName}" from the complement list for "${sourceName}"?`,
+    })
+    if (ok) removeComplement.mutate(mapping.id)
+  }
+
+  const openCreate = (tier: RuleForm['tier'] = 'manual') => {
     setEditingId(null)
-    setForm(EMPTY)
+    setForm({ ...EMPTY, tier })
     setProductSearch('')
     setOpen(true)
   }
   const openEdit = (rule: any) => {
+    setEditingComplementId(null)
     setEditingId(rule.id)
     setForm({
       name: rule.name,
@@ -125,6 +231,8 @@ const SuggestionRulesPage = () => {
       tier: rule.tier,
       source_product_ids: rule.source_product_ids ?? [],
       priority: rule.priority ?? 0,
+      source_category_id: '',
+      complement_category_ids: [],
       items: (rule.items ?? []).length
         ? rule.items.map((i: any) => ({
             suggested_product_id: i.suggested_product_id,
@@ -133,6 +241,18 @@ const SuggestionRulesPage = () => {
         : [{ suggested_product_id: '', custom_label: '' }],
     })
     setProductSearch('')
+    setOpen(true)
+  }
+  const openEditComplement = (mapping: any) => {
+    setEditingId(null)
+    setEditingComplementId(mapping.id)
+    setForm({
+      ...EMPTY,
+      tier: 'category',
+      source_category_id: mapping.source_category_id,
+      complement_category_ids: [mapping.complement_category_id],
+      priority: mapping.display_order,
+    })
     setOpen(true)
   }
   const onDelete = async (rule: any) => {
@@ -162,6 +282,10 @@ const SuggestionRulesPage = () => {
     }))
 
   const rules = data?.suggestion_rules ?? []
+  const ruleCount = data?.count ?? 0
+  const rulePageCount = Math.ceil(ruleCount / PAGE_SIZE)
+  const mappingCount = categoryGroups.length
+  const mappingPageCount = Math.ceil(mappingCount / PAGE_SIZE)
   const visibleProducts = products.filter((product: any) =>
     product.title.toLowerCase().includes(productSearch.trim().toLowerCase())
   )
@@ -175,214 +299,465 @@ const SuggestionRulesPage = () => {
   }
 
   return (
-    <Container className="divide-y p-0">
-      <div className="flex items-center justify-between px-6 py-4">
-        <Heading level="h1">Suggestion Rules</Heading>
-        <Button size="small" variant="primary" onClick={openCreate}>
-          Create
-        </Button>
-      </div>
-
-      {isLoading ? (
-        <div className="px-6 py-8">
-          <Text>Loading...</Text>
+    <Container className="overflow-hidden p-0">
+      <Tabs
+        value={activeTab}
+        onValueChange={(value) => setActiveTab(value as 'manual' | 'category')}
+      >
+        <div className="flex items-center justify-between px-6 py-4">
+          <div>
+            <Heading level="h1">Suggestive Selling</Heading>
+            <Text size="small" className="text-ui-fg-subtle">
+              Configure product-level manual recommendations and category-based fallback rules.
+            </Text>
+          </div>
+          <Button
+            size="small"
+            variant="primary"
+            onClick={() => openCreate(activeTab === 'manual' ? 'manual' : 'category')}
+          >
+            {activeTab === 'manual' ? 'Create manual rule' : 'Create category mapping'}
+          </Button>
         </div>
-      ) : (
-        <Table>
-          <Table.Header>
-            <Table.Row>
-              <Table.HeaderCell>Name</Table.HeaderCell>
-              <Table.HeaderCell>Type</Table.HeaderCell>
-              <Table.HeaderCell>Tier</Table.HeaderCell>
-              <Table.HeaderCell>Source products</Table.HeaderCell>
-              <Table.HeaderCell>Items</Table.HeaderCell>
-              <Table.HeaderCell>Priority</Table.HeaderCell>
-              <Table.HeaderCell className="text-right">Actions</Table.HeaderCell>
-            </Table.Row>
-          </Table.Header>
-          <Table.Body>
-            {rules.map((r: any) => (
-              <Table.Row key={r.id}>
-                <Table.Cell>{r.name}</Table.Cell>
-                <Table.Cell>
-                  <Badge size="2xsmall">{r.type}</Badge>
-                </Table.Cell>
-                <Table.Cell>{r.tier}</Table.Cell>
-                <Table.Cell>
-                  <div className="max-w-80 truncate" title={sourceProductSummary(r)}>
-                    {sourceProductSummary(r)}
-                  </div>
-                </Table.Cell>
-                <Table.Cell>{r.items?.length ?? 0}</Table.Cell>
-                <Table.Cell>{r.priority}</Table.Cell>
-                <Table.Cell className="text-right">
-                  <div className="flex justify-end gap-2">
-                    <Button size="small" variant="secondary" onClick={() => openEdit(r)}>
-                      Edit
-                    </Button>
-                    <Button size="small" variant="danger" onClick={() => onDelete(r)}>
-                      Delete
-                    </Button>
-                  </div>
-                </Table.Cell>
-              </Table.Row>
-            ))}
-            {!rules.length && (
+
+        <Tabs.List className="border-y border-ui-border-base px-6">
+          <Tabs.Trigger value="manual">Manual Product Rules (Tier 1)</Tabs.Trigger>
+          <Tabs.Trigger value="category">Category Complements (Tier 2)</Tabs.Trigger>
+        </Tabs.List>
+
+        <Tabs.Content value="manual">
+          <div className="px-6 py-4">
+            <Heading level="h2">Manual Product Rules</Heading>
+            <Text size="small" className="text-ui-fg-subtle">
+              Link source products to explicitly curated suggested products. Lower priority numbers run first.
+            </Text>
+          </div>
+          {isLoading ? (
+            <div className="px-6 py-8">
+              <Text>Loading...</Text>
+            </div>
+          ) : (
+            <>
+              <Table>
+                <Table.Header>
+                  <Table.Row>
+                    <Table.HeaderCell>Name</Table.HeaderCell>
+                    <Table.HeaderCell>Source products</Table.HeaderCell>
+                    <Table.HeaderCell>Items</Table.HeaderCell>
+                    <Table.HeaderCell title="Lower numbers run first">Priority</Table.HeaderCell>
+                    <Table.HeaderCell className="text-right">Actions</Table.HeaderCell>
+                  </Table.Row>
+                </Table.Header>
+                <Table.Body>
+                  {rules.map((rule: any) => (
+                    <Table.Row key={rule.id}>
+                      <Table.Cell>{rule.name}</Table.Cell>
+                      <Table.Cell>
+                        <div className="max-w-80 truncate" title={sourceProductSummary(rule)}>
+                          {sourceProductSummary(rule)}
+                        </div>
+                      </Table.Cell>
+                      <Table.Cell>{rule.items?.length ?? 0}</Table.Cell>
+                      <Table.Cell>{rule.priority}</Table.Cell>
+                      <Table.Cell className="text-right">
+                        <div className="flex justify-end gap-2">
+                          <Button size="small" variant="secondary" onClick={() => openEdit(rule)}>
+                            Edit
+                          </Button>
+                          <Button size="small" variant="danger" onClick={() => onDelete(rule)}>
+                            Delete
+                          </Button>
+                        </div>
+                      </Table.Cell>
+                    </Table.Row>
+                  ))}
+                  {!rules.length && (
+                    <Table.Row>
+                      <Table.Cell>
+                        <Text className="text-ui-fg-subtle">No manual rules yet.</Text>
+                      </Table.Cell>
+                      <Table.Cell />
+                      <Table.Cell />
+                      <Table.Cell />
+                      <Table.Cell />
+                    </Table.Row>
+                  )}
+                </Table.Body>
+              </Table>
+              <Table.Pagination
+                count={ruleCount}
+                pageSize={PAGE_SIZE}
+                pageIndex={rulePage}
+                pageCount={rulePageCount}
+                canPreviousPage={rulePage > 0}
+                canNextPage={rulePage + 1 < rulePageCount}
+                previousPage={() => setRulePage((page) => Math.max(0, page - 1))}
+                nextPage={() => setRulePage((page) => page + 1)}
+              />
+            </>
+          )}
+        </Tabs.Content>
+
+        <Tabs.Content value="category">
+          <div className="px-6 py-4">
+            <Heading level="h2">Category Complements</Heading>
+            <Text size="small" className="text-ui-fg-subtle">
+              Each source category owns an ordered list of fallback categories. Lower display-order numbers are evaluated first.
+            </Text>
+          </div>
+          <Table>
+            <Table.Header>
               <Table.Row>
-                <Table.Cell>
-                  <Text className="text-ui-fg-subtle">No rules yet.</Text>
-                </Table.Cell>
-                {Array.from({ length: 6 }).map((_, index) => (
-                  <Table.Cell key={index} />
-                ))}
+                <Table.HeaderCell>Source category</Table.HeaderCell>
+                <Table.HeaderCell>Ordered complement categories</Table.HeaderCell>
               </Table.Row>
-            )}
-          </Table.Body>
-        </Table>
-      )}
+            </Table.Header>
+            <Table.Body>
+              {visibleCategoryGroups.map((group) => (
+                <Table.Row key={group.source_category_id}>
+                  <Table.Cell>
+                    <div className="flex flex-col">
+                      <Text size="small" weight="plus">
+                        {categoryNameById.get(group.source_category_id) ?? group.source_category_id}
+                      </Text>
+                      <Text size="xsmall" className="text-ui-fg-subtle">
+                        {group.mappings.length} complement categories
+                      </Text>
+                    </div>
+                  </Table.Cell>
+                  <Table.Cell>
+                    <div className="flex flex-wrap gap-2">
+                      {group.mappings.map((mapping: any) => (
+                        <div
+                          key={mapping.id}
+                          className="flex items-center gap-1 rounded-md border border-ui-border-base bg-ui-bg-subtle px-2 py-1"
+                        >
+                          <Badge size="2xsmall">#{mapping.display_order}</Badge>
+                          <Text size="small">
+                            {categoryNameById.get(mapping.complement_category_id) ??
+                              mapping.complement_category_id}
+                          </Text>
+                          <Button
+                            size="small"
+                            variant="transparent"
+                            onClick={() => openEditComplement(mapping)}
+                          >
+                            Edit
+                          </Button>
+                          <Button
+                            size="small"
+                            variant="transparent"
+                            onClick={() => onDeleteComplement(mapping)}
+                            disabled={removeComplement.isPending}
+                          >
+                            X
+                          </Button>
+                        </div>
+                      ))}
+                    </div>
+                  </Table.Cell>
+                </Table.Row>
+              ))}
+              {!visibleCategoryGroups.length && (
+                <Table.Row>
+                  <Table.Cell>
+                    <Text className="text-ui-fg-subtle">No category mappings yet.</Text>
+                  </Table.Cell>
+                  <Table.Cell />
+                </Table.Row>
+              )}
+            </Table.Body>
+          </Table>
+          <Table.Pagination
+            count={mappingCount}
+            pageSize={PAGE_SIZE}
+            pageIndex={mappingPage}
+            pageCount={mappingPageCount}
+            canPreviousPage={mappingPage > 0}
+            canNextPage={mappingPage + 1 < mappingPageCount}
+            previousPage={() => setMappingPage((page) => Math.max(0, page - 1))}
+            nextPage={() => setMappingPage((page) => page + 1)}
+          />
+        </Tabs.Content>
+      </Tabs>
 
       <Drawer open={open} onOpenChange={setOpen}>
         <Drawer.Content>
           <Drawer.Header>
-            <Drawer.Title>{editingId ? 'Edit rule' : 'Create rule'}</Drawer.Title>
+            <Drawer.Title>{editingComplementId ? 'Edit category mapping' : editingId ? 'Edit rule' : 'Create rule'}</Drawer.Title>
           </Drawer.Header>
           <Drawer.Body className="flex flex-col gap-4 overflow-y-auto">
             <div className="flex flex-col gap-1">
-              <Label>Name</Label>
-              <Input
-                value={form.name}
-                onChange={(e) => setForm({ ...form, name: e.target.value })}
-                placeholder="Astrox 99 Pro setup"
-              />
+              <Label>Tier</Label>
+              <Select
+                value={form.tier}
+                disabled={!!editingId || !!editingComplementId}
+                onValueChange={(value: RuleForm['tier']) =>
+                  setForm({
+                    ...form,
+                    tier: value,
+                    type: 'product',
+                    source_category_id: '',
+                    complement_category_ids: [],
+                  })
+                }
+              >
+                <Select.Trigger>
+                  <Select.Value />
+                </Select.Trigger>
+                <Select.Content>
+                  <Select.Item value="manual">Manual</Select.Item>
+                  <Select.Item value="category">Category complement</Select.Item>
+                  <Select.Item value="behavioral">Behavioral</Select.Item>
+                </Select.Content>
+              </Select>
+              {(editingId || editingComplementId) && (
+                <Text size="xsmall" className="text-ui-fg-subtle">
+                  Tier cannot be changed while editing.
+                </Text>
+              )}
             </div>
 
-            <div className="grid grid-cols-2 gap-3">
-              <div className="flex flex-col gap-1">
-                <Label>Type</Label>
-                <Select value={form.type} onValueChange={(v: any) => setForm({ ...form, type: v })}>
-                  <Select.Trigger>
-                    <Select.Value />
-                  </Select.Trigger>
-                  <Select.Content>
-                    <Select.Item value="product">product</Select.Item>
-                    <Select.Item value="cart">cart</Select.Item>
-                  </Select.Content>
-                </Select>
-              </div>
-              <div className="flex flex-col gap-1">
-                <Label>Tier</Label>
-                <Select value={form.tier} onValueChange={(v: any) => setForm({ ...form, tier: v })}>
-                  <Select.Trigger>
-                    <Select.Value />
-                  </Select.Trigger>
-                  <Select.Content>
-                    <Select.Item value="manual">manual</Select.Item>
-                    <Select.Item value="category">category</Select.Item>
-                    <Select.Item value="behavioral">behavioral</Select.Item>
-                  </Select.Content>
-                </Select>
-              </div>
-            </div>
+            {form.tier === 'manual' && (
+              <>
+                <div className="flex flex-col gap-1">
+                  <Label>Name</Label>
+                  <Input
+                    value={form.name}
+                    onChange={(event) => setForm({ ...form, name: event.target.value })}
+                    placeholder="Astrox 99 Pro setup"
+                  />
+                </div>
 
-            {form.type === 'product' && (
-              <div className="flex flex-col gap-2">
-                <div className="flex items-center justify-between">
-                  <Label>Source products</Label>
+                <div className="flex flex-col gap-1">
+                  <Label>Type</Label>
+                  <Select
+                    value={form.type}
+                    onValueChange={(value: RuleForm['type']) => setForm({ ...form, type: value })}
+                  >
+                    <Select.Trigger>
+                      <Select.Value />
+                    </Select.Trigger>
+                    <Select.Content>
+                      <Select.Item value="product">Product</Select.Item>
+                      <Select.Item value="cart">Cart</Select.Item>
+                    </Select.Content>
+                  </Select>
+                </div>
+
+                {form.type === 'product' && (
+                  <div className="flex flex-col gap-2">
+                    <div className="flex items-center justify-between">
+                      <Label>Source products</Label>
+                      <Text size="xsmall" className="text-ui-fg-subtle">
+                        {form.source_product_ids.length} selected
+                      </Text>
+                    </div>
+                    <Input
+                      value={productSearch}
+                      onChange={(event) => setProductSearch(event.target.value)}
+                      placeholder="Search products..."
+                    />
+                    <div className="max-h-52 overflow-y-auto rounded border border-ui-border-base">
+                      {visibleProducts.map((product: any) => {
+                        const checked = form.source_product_ids.includes(product.id)
+                        return (
+                          <label
+                            key={product.id}
+                            className="flex cursor-pointer items-center gap-3 border-b border-ui-border-base px-3 py-2 last:border-b-0"
+                          >
+                            <Checkbox
+                              checked={checked}
+                              onCheckedChange={(value) =>
+                                toggleSourceProduct(product.id, value === true)
+                              }
+                            />
+                            <Text size="small">{product.title}</Text>
+                          </label>
+                        )
+                      })}
+                      {!visibleProducts.length && (
+                        <Text size="small" className="block px-3 py-4 text-ui-fg-subtle">
+                          No matching products.
+                        </Text>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                <div className="flex flex-col gap-1">
+                  <Label>Priority</Label>
+                  <Input
+                    type="number"
+                    value={form.priority}
+                    onChange={(event) =>
+                      setForm({ ...form, priority: Number(event.target.value) })
+                    }
+                  />
                   <Text size="xsmall" className="text-ui-fg-subtle">
-                    {form.source_product_ids.length} selected
+                    Lower numbers run first. Priority 9 runs before priority 10.
                   </Text>
                 </div>
-                <Input
-                  value={productSearch}
-                  onChange={(event) => setProductSearch(event.target.value)}
-                  placeholder="Search products..."
-                />
-                <div className="max-h-52 overflow-y-auto rounded border border-ui-border-base">
-                  {visibleProducts.map((product: any) => {
-                    const checked = form.source_product_ids.includes(product.id)
 
-                    return (
-                      <label
-                        key={product.id}
-                        className="flex cursor-pointer items-center gap-3 border-b border-ui-border-base px-3 py-2 last:border-b-0"
+                <div className="flex flex-col gap-2">
+                  <div className="flex items-center justify-between">
+                    <Label>Suggested items</Label>
+                    <Button size="small" variant="secondary" onClick={addItem}>
+                      Add item
+                    </Button>
+                  </div>
+                  {form.items.map((item, index) => (
+                    <div key={index} className="grid grid-cols-[1fr_1fr_auto] items-end gap-2">
+                      <Select
+                        value={item.suggested_product_id}
+                        onValueChange={(value) =>
+                          setItem(index, { suggested_product_id: value })
+                        }
                       >
-                        <Checkbox
-                          checked={checked}
-                          onCheckedChange={(value) =>
-                            toggleSourceProduct(product.id, value === true)
-                          }
-                        />
-                        <Text size="small">{product.title}</Text>
-                      </label>
-                    )
-                  })}
-                  {!visibleProducts.length && (
-                    <Text size="small" className="block px-3 py-4 text-ui-fg-subtle">
-                      No matching products.
-                    </Text>
-                  )}
+                        <Select.Trigger>
+                          <Select.Value placeholder="Product..." />
+                        </Select.Trigger>
+                        <Select.Content>
+                          {products.map((product: any) => (
+                            <Select.Item key={product.id} value={product.id}>
+                              {product.title}
+                            </Select.Item>
+                          ))}
+                        </Select.Content>
+                      </Select>
+                      <Input
+                        placeholder="Label (optional)"
+                        value={item.custom_label}
+                        onChange={(event) =>
+                          setItem(index, { custom_label: event.target.value })
+                        }
+                      />
+                      <Button
+                        size="small"
+                        variant="transparent"
+                        onClick={() => removeItem(index)}
+                        disabled={form.items.length === 1}
+                      >
+                        X
+                      </Button>
+                    </div>
+                  ))}
                 </div>
-              </div>
+              </>
             )}
 
-            <div className="flex flex-col gap-1">
-              <Label>Priority</Label>
-              <Input
-                type="number"
-                value={form.priority}
-                onChange={(e) => setForm({ ...form, priority: Number(e.target.value) })}
-              />
-            </div>
-
-            <div className="flex flex-col gap-2">
-              <div className="flex items-center justify-between">
-                <Label>Suggested items</Label>
-                <Button size="small" variant="secondary" onClick={addItem}>
-                  Add item
-                </Button>
-              </div>
-              {form.items.map((it, idx) => (
-                <div key={idx} className="grid grid-cols-[1fr_1fr_auto] items-end gap-2">
-                  <div className="flex flex-col gap-1">
-                    <Select
-                      value={it.suggested_product_id}
-                      onValueChange={(v) => setItem(idx, { suggested_product_id: v })}
-                    >
-                      <Select.Trigger>
-                        <Select.Value placeholder="Product..." />
-                      </Select.Trigger>
-                      <Select.Content>
-                        {products.map((p: any) => (
-                          <Select.Item key={p.id} value={p.id}>
-                            {p.title}
-                          </Select.Item>
-                        ))}
-                      </Select.Content>
-                    </Select>
-                  </div>
-                  <Input
-                    placeholder="Label (optional)"
-                    value={it.custom_label}
-                    onChange={(e) => setItem(idx, { custom_label: e.target.value })}
-                  />
-                  <Button
-                    size="small"
-                    variant="transparent"
-                    onClick={() => removeItem(idx)}
-                    disabled={form.items.length === 1}
+            {form.tier === 'category' && (
+              <>
+                <div className="flex flex-col gap-1">
+                  <Label>Source category</Label>
+                  <Select
+                    value={form.source_category_id}
+                    onValueChange={(value) =>
+                      setForm({
+                        ...form,
+                        source_category_id: value,
+                        complement_category_ids: form.complement_category_ids.filter(
+                          (categoryId) => categoryId !== value
+                        ),
+                      })
+                    }
                   >
-
-                  </Button>
+                    <Select.Trigger>
+                      <Select.Value placeholder="Select a source category" />
+                    </Select.Trigger>
+                    <Select.Content>
+                      {categories.map((category: any) => (
+                        <Select.Item key={category.id} value={category.id}>
+                          {category.name}
+                        </Select.Item>
+                      ))}
+                    </Select.Content>
+                  </Select>
                 </div>
-              ))}
-            </div>
+
+                <div className="flex flex-col gap-2">
+                  <div className="flex items-center justify-between">
+                    <Label>Complement categories</Label>
+                    <Text size="xsmall" className="text-ui-fg-subtle">
+                      {form.complement_category_ids.length} selected
+                    </Text>
+                  </div>
+                  <div className="max-h-64 overflow-y-auto rounded border border-ui-border-base">
+                    {categories
+                      .filter((category: any) => category.id !== form.source_category_id)
+                      .map((category: any) => {
+                        const checked = form.complement_category_ids.includes(category.id)
+                        return (
+                          <label
+                            key={category.id}
+                            className="flex cursor-pointer items-center gap-3 border-b border-ui-border-base px-3 py-2 last:border-b-0"
+                          >
+                            <Checkbox
+                              checked={checked}
+                              onCheckedChange={(value) =>
+                                setForm({
+                                  ...form,
+                                  complement_category_ids:
+                                    value === true
+                                      ? editingComplementId
+                                        ? [category.id]
+                                        : [...new Set([...form.complement_category_ids, category.id])]
+                                      : form.complement_category_ids.filter(
+                                          (categoryId) => categoryId !== category.id
+                                        ),
+                                })
+                              }
+                            />
+                            <Text size="small">{category.name}</Text>
+                          </label>
+                        )
+                      })}
+                  </div>
+                </div>
+
+                <div className="flex flex-col gap-1">
+                  <Label>{editingComplementId ? 'Display order' : 'Starting display order'}</Label>
+                  <Input
+                    type="number"
+                    value={form.priority}
+                    onChange={(event) =>
+                      setForm({ ...form, priority: Number(event.target.value) })
+                    }
+                  />
+                  <Text size="xsmall" className="text-ui-fg-subtle">
+                    {editingComplementId
+                      ? 'Order must be unique within this source category. Lower numbers run first.'
+                      : 'Orders must be unique within this source category. Selected complements receive consecutive values.'}
+                  </Text>
+                </div>
+              </>
+            )}
+
+            {form.tier === 'behavioral' && (
+              <div className="rounded border border-ui-border-base bg-ui-bg-subtle p-4">
+                <Heading level="h2">Available in Phase 2</Heading>
+                <Text size="small" className="mt-2 text-ui-fg-subtle">
+                  Behavioral suggestions require customer browsing and purchase signals. The schema is
+                  ready, but evaluation and configuration are not enabled in Phase 1.
+                </Text>
+              </div>
+            )}
           </Drawer.Body>
           <Drawer.Footer>
             <Drawer.Close asChild>
               <Button variant="secondary">Cancel</Button>
             </Drawer.Close>
-            <Button onClick={() => save.mutate()} isLoading={save.isPending} disabled={!form.name}>
-              {editingId ? 'Save' : 'Create'}
+            <Button
+              onClick={() => save.mutate()}
+              isLoading={save.isPending}
+              disabled={
+                form.tier === 'behavioral' ||
+                (form.tier === 'manual'
+                  ? !form.name
+                  : !form.source_category_id || !form.complement_category_ids.length)
+              }
+            >
+              {form.tier === 'behavioral' ? 'Unavailable' : form.tier === 'category' ? (editingComplementId ? 'Save mapping' : 'Create mappings') : editingId ? 'Save' : 'Create'}
             </Button>
           </Drawer.Footer>
         </Drawer.Content>
@@ -392,7 +767,7 @@ const SuggestionRulesPage = () => {
 }
 
 export const config = defineRouteConfig({
-  label: 'Suggestion Rules',
+  label: 'Suggestive Selling',
   icon: Sparkles,
 })
 

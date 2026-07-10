@@ -1,4 +1,4 @@
-﻿/**
+/**
  * SuggestiveSelling constants - SPEC.md section A.2.
  * Central tuning knobs; SRS/Decision ids cited inline.
  */
@@ -33,7 +33,7 @@ export const FREE_SHIPPING_THRESHOLD = 7_000_000; // VND
 
 // Cache key builders (BR-06). Phase 1 uses a single store, so no store segment.
 export const productCacheKey = (productId: string) =>
-  `suggest:product:v2:${productId}`;
+  `suggest:product:v3:${productId}`;
 export const cartCacheKey = (cartId: string) => `suggest:cart:${cartId}`;
 export const dismissKey = (scope: string, context: string) =>
   `suggest:dismiss:${scope}:${context}`;

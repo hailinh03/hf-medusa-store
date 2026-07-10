@@ -1,4 +1,4 @@
-﻿import {
+import {
   ContainerRegistrationKeys,
   Modules,
   QueryContext,
@@ -263,33 +263,40 @@ export class EvaluationEngine {
     // Tier 2 candidate pool. Per-request filters run before ranking, so eligible
     // Tier 1 stays first and Tier 2 fills the remaining slots up to 5.
     if (sourceCategoryIds.length) {
-      const complementCatIds: string[] = [];
-      for (const catId of sourceCategoryIds) {
-        const maps = await this.service.listComplements(catId);
-        complementCatIds.push(
-          ...maps.map((m: any) => m.complement_category_id),
-        );
-      }
       const exclude = new Set<string>([
         productId,
-        ...result.map((r) => r.product_id),
+        ...result.map((candidate) => candidate.product_id),
       ]);
-      const topSellers = await this.fetchByCategories(
-        complementCatIds,
-        PRODUCT_LIMIT,
-        exclude,
-      );
-      topSellers.forEach((e, i) => {
-        if (e.status !== "published") return;
-        if (result.some((r) => r.product_id === e.product_id)) return;
-        result.push({
-          ...e,
-          tier: "category",
-          rule_id: null,
-          label: null,
-          display_order: 1000 + i,
-        });
-      });
+      const seenComplementCategories = new Set<string>();
+      let categoryOrder = 0;
+
+      for (const sourceCategoryId of sourceCategoryIds) {
+        const mappings = await this.service.listComplements(sourceCategoryId);
+        for (const mapping of mappings) {
+          const complementCategoryId = mapping.complement_category_id;
+          if (seenComplementCategories.has(complementCategoryId)) continue;
+          seenComplementCategories.add(complementCategoryId);
+
+          const candidates = await this.fetchByCategories(
+            [complementCategoryId],
+            PRODUCT_LIMIT,
+            exclude,
+          );
+          candidates.slice(0, PRODUCT_LIMIT).forEach((candidate, index) => {
+            if (candidate.status !== "published") return;
+            if (exclude.has(candidate.product_id)) return;
+            exclude.add(candidate.product_id);
+            result.push({
+              ...candidate,
+              tier: "category",
+              rule_id: null,
+              label: null,
+              display_order: 1000 + categoryOrder * 100 + index,
+            });
+          });
+          categoryOrder++;
+        }
+      }
     }
 
     if (this.cache) await this.cache.set(key, result, SUGGESTION_CACHE_TTL);
