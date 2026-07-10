@@ -1,16 +1,22 @@
 import { MedusaRequest, MedusaResponse } from '@medusajs/framework/http'
 import { SUGGESTIVE_SELLING_MODULE } from '../../../../modules/suggestive-selling'
 import { UpdateSuggestionRuleBody } from '../validators'
-import { invalidateSuggestionCache } from '../helpers'
+import {
+  getSourceProductIds,
+  invalidateSuggestionCache,
+  replaceSourceProductLinks,
+  withSourceProducts,
+} from '../helpers'
 
 /**
  * GET /admin/suggestion-rules/:id — retrieve one rule with items + conditions.
  */
 export const GET = async (req: MedusaRequest, res: MedusaResponse) => {
   const service: any = req.scope.resolve(SUGGESTIVE_SELLING_MODULE)
-  const suggestion_rule = await service.retrieveSuggestionRule(req.params.id, {
+  const rule = await service.retrieveSuggestionRule(req.params.id, {
     relations: ['items', 'conditions'],
   })
+  const [suggestion_rule] = await withSourceProducts(req.scope, [rule])
   res.json({ suggestion_rule })
 }
 
@@ -24,7 +30,8 @@ export const PUT = async (
 ) => {
   const service: any = req.scope.resolve(SUGGESTIVE_SELLING_MODULE)
   const { id } = req.params
-  const { items, conditions, ...ruleData } = req.validatedBody
+  const { items, conditions, source_product_ids, ...ruleData } = req.validatedBody
+  const previousSourceProductIds = await getSourceProductIds(req.scope, id)
 
   if (Object.keys(ruleData).length) {
     await service.updateSuggestionRules({ id, ...ruleData })
@@ -52,10 +59,18 @@ export const PUT = async (
     }
   }
 
-  const suggestion_rule = await service.retrieveSuggestionRule(id, {
+  if (source_product_ids !== undefined) {
+    await replaceSourceProductLinks(req.scope, id, source_product_ids)
+  }
+
+  const rule = await service.retrieveSuggestionRule(id, {
     relations: ['items', 'conditions'],
   })
-  await invalidateSuggestionCache(req.scope, suggestion_rule)
+  const [suggestion_rule] = await withSourceProducts(req.scope, [rule])
+  await invalidateSuggestionCache(req.scope, [
+    ...previousSourceProductIds,
+    ...suggestion_rule.source_product_ids,
+  ])
   res.json({ suggestion_rule })
 }
 
@@ -67,10 +82,10 @@ export const DELETE = async (req: MedusaRequest, res: MedusaResponse) => {
   const service: any = req.scope.resolve(SUGGESTIVE_SELLING_MODULE)
   const { id } = req.params
 
-  // Capture source_product_id before soft-delete so we can invalidate its cache.
-  const rule = await service.retrieveSuggestionRule(id).catch(() => null)
+  const sourceProductIds = await getSourceProductIds(req.scope, id)
+  await replaceSourceProductLinks(req.scope, id, [])
   await service.softDeleteSuggestionRules(id)
-  if (rule) await invalidateSuggestionCache(req.scope, rule)
+  await invalidateSuggestionCache(req.scope, sourceProductIds)
 
   res.json({ id, object: 'suggestion_rule', deleted: true })
 }

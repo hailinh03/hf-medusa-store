@@ -1,17 +1,98 @@
 import { MedusaContainer } from '@medusajs/framework/types'
+import { ContainerRegistrationKeys, Modules } from '@medusajs/framework/utils'
 import { invalidateProductSuggestions } from '../../../modules/suggestive-selling/cache'
+import { SUGGESTIVE_SELLING_MODULE } from '../../../modules/suggestive-selling'
 
-/**
- * Invalidate cached suggestions affected by a rule change (SRS §7.1 / SUGG-005).
- * Product-level rules invalidate their source product's cache key; cart/category
- * rules have no single source product (their cache is invalidated on cart change
- * by the cart.updated subscriber instead).
- */
+type SourceProduct = {
+  id: string
+  title?: string
+}
+
+type SuggestionRule = Record<string, unknown> & {
+  id: string
+}
+
+const linkDefinition = (ruleId: string, productId: string) => ({
+  [SUGGESTIVE_SELLING_MODULE]: {
+    suggestion_rule_id: ruleId,
+  },
+  [Modules.PRODUCT]: {
+    product_id: productId,
+  },
+})
+
+export async function withSourceProducts<T extends SuggestionRule>(
+  scope: MedusaContainer,
+  rules: T[]
+): Promise<Array<T & { source_products: SourceProduct[]; source_product_ids: string[] }>> {
+  if (!rules.length) {
+    return []
+  }
+
+  const query = scope.resolve(ContainerRegistrationKeys.QUERY)
+  const { data } = await query.graph({
+    entity: 'suggestion_rule',
+    fields: ['id', 'products.id', 'products.title'],
+    filters: {
+      id: rules.map((rule) => rule.id),
+    },
+  })
+
+  const productsByRuleId = new Map<string, SourceProduct[]>(
+    data.map((rule: any) => [rule.id, rule.products ?? []])
+  )
+
+  return rules.map((rule) => {
+    const sourceProducts = productsByRuleId.get(rule.id) ?? []
+
+    return {
+      ...rule,
+      source_products: sourceProducts,
+      source_product_ids: sourceProducts.map((product) => product.id),
+    }
+  })
+}
+
+export async function getSourceProductIds(
+  scope: MedusaContainer,
+  ruleId: string
+): Promise<string[]> {
+  const [rule] = await withSourceProducts(scope, [{ id: ruleId }])
+  return rule?.source_product_ids ?? []
+}
+
+export async function replaceSourceProductLinks(
+  scope: MedusaContainer,
+  ruleId: string,
+  productIds: string[]
+): Promise<string[]> {
+  const link = scope.resolve(ContainerRegistrationKeys.LINK)
+  const currentIds = await getSourceProductIds(scope, ruleId)
+  const nextIds = [...new Set(productIds)]
+  const current = new Set(currentIds)
+  const next = new Set(nextIds)
+
+  const linksToDismiss = currentIds
+    .filter((productId) => !next.has(productId))
+    .map((productId) => linkDefinition(ruleId, productId))
+  const linksToCreate = nextIds
+    .filter((productId) => !current.has(productId))
+    .map((productId) => linkDefinition(ruleId, productId))
+
+  if (linksToDismiss.length) {
+    await link.dismiss(linksToDismiss)
+  }
+  if (linksToCreate.length) {
+    await link.create(linksToCreate)
+  }
+
+  return nextIds
+}
+
 export async function invalidateSuggestionCache(
   scope: MedusaContainer,
-  rule: { source_product_id?: string | null }
+  productIds: string[]
 ): Promise<void> {
-  if (rule?.source_product_id) {
-    await invalidateProductSuggestions(scope, rule.source_product_id)
-  }
+  const uniqueIds = [...new Set(productIds)]
+  await Promise.all(uniqueIds.map((productId) => invalidateProductSuggestions(scope, productId)))
 }

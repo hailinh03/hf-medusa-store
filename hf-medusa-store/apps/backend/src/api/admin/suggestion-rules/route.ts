@@ -1,7 +1,7 @@
 import { MedusaRequest, MedusaResponse } from '@medusajs/framework/http'
 import { SUGGESTIVE_SELLING_MODULE } from '../../../modules/suggestive-selling'
 import { CreateSuggestionRuleBody } from './validators'
-import { invalidateSuggestionCache } from './helpers'
+import { invalidateSuggestionCache, replaceSourceProductLinks, withSourceProducts } from './helpers'
 
 /**
  * GET /admin/suggestion-rules — list rules (SRS §6.1).
@@ -15,12 +15,13 @@ export const GET = async (req: MedusaRequest, res: MedusaResponse) => {
   if (type) filters.type = type
   if (is_active !== undefined) filters.is_active = is_active === 'true'
 
-  const [suggestion_rules, count] = await service.listAndCountSuggestionRules(filters, {
+  const [rules, count] = await service.listAndCountSuggestionRules(filters, {
     relations: ['items', 'conditions'],
     take: Number(limit),
     skip: Number(offset),
     order: { priority: 'ASC' },
   })
+  const suggestion_rules = await withSourceProducts(req.scope, rules)
 
   res.json({ suggestion_rules, count, limit: Number(limit), offset: Number(offset) })
 }
@@ -33,14 +34,16 @@ export const POST = async (
   res: MedusaResponse
 ) => {
   const service: any = req.scope.resolve(SUGGESTIVE_SELLING_MODULE)
-  const { items, conditions, ...ruleData } = req.validatedBody
+  const { items, conditions, source_product_ids, ...ruleData } = req.validatedBody
 
-  const suggestion_rule = await service.createSuggestionRules({
+  const createdRule = await service.createSuggestionRules({
     ...ruleData,
     items,
     conditions,
   })
+  await replaceSourceProductLinks(req.scope, createdRule.id, source_product_ids)
 
-  await invalidateSuggestionCache(req.scope, suggestion_rule)
+  const [suggestion_rule] = await withSourceProducts(req.scope, [createdRule])
+  await invalidateSuggestionCache(req.scope, source_product_ids)
   res.status(201).json({ suggestion_rule })
 }

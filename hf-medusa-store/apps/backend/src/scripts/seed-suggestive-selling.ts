@@ -1,5 +1,5 @@
 import { ExecArgs } from '@medusajs/framework/types'
-import { Modules } from '@medusajs/framework/utils'
+import { ContainerRegistrationKeys, Modules } from '@medusajs/framework/utils'
 import { SUGGESTIVE_SELLING_MODULE } from '../modules/suggestive-selling'
 
 /**
@@ -46,7 +46,8 @@ const TIER1_RULES: Record<string, { handle: string; label?: string }[]> = {
 }
 
 export default async function seedSuggestiveSelling({ container }: ExecArgs) {
-  const logger = container.resolve('logger')
+  const logger = container.resolve(ContainerRegistrationKeys.LOGGER)
+  const link = container.resolve(ContainerRegistrationKeys.LINK)
   const productModule = container.resolve(Modules.PRODUCT)
   const ss: any = container.resolve(SUGGESTIVE_SELLING_MODULE)
 
@@ -131,14 +132,21 @@ export default async function seedSuggestiveSelling({ container }: ExecArgs) {
 
     if (!items.length) continue
 
-    await ss.createSuggestionRules({
+    const rule = await ss.createSuggestionRules({
       name: `Complete your setup: ${sourceHandle}`,
       type: 'product',
       tier: 'manual',
-      source_product_id: sourceId,
       priority: 10,
       is_active: true,
       items,
+    })
+    await link.create({
+      [SUGGESTIVE_SELLING_MODULE]: {
+        suggestion_rule_id: rule.id,
+      },
+      [Modules.PRODUCT]: {
+        product_id: sourceId,
+      },
     })
     created++
   }
