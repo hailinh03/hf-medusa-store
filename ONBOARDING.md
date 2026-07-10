@@ -39,24 +39,73 @@ Sửa trong `.env`:
 
 ## 4. Tạo bảng + seed catalog (tự động)
 ```bash
-npx medusa db:migrate
+pnpm exec medusa db:migrate
 ```
-`db:migrate` chạy migrations **và tự chạy** `src/migration-scripts/initial-data-seed.ts` → tạo:
+`db:migrate` chạy module migrations, đồng bộ Module Link tables, sau đó tự chạy các
+migration script còn pending. Trong lần setup DB mới, script
+`src/migration-scripts/initial-data-seed.ts` sẽ tạo:
 - Store (VND) + region Vietnam + sales channel + publishable API key
 - **9 category, 21 sản phẩm cầu lông** (vợt/cầu/dây/giày/grip/bao/tất/lót/ống) kèm **ảnh S3**
 
-> Idempotent: nếu DB đã seed (đã có "Default Sales Channel") thì bước seed tự bỏ qua.
+> Script có guard: nếu DB đã có `Default Sales Channel` thì bỏ qua toàn bộ catalog
+> seed. Migration scripts cũng được Medusa đánh dấu đã chạy và không tự chạy lại ở
+> các lần `db:migrate` sau.
 
 ## 5. Seed mapping gợi ý (SuggestiveSelling — chạy tay)
 ```bash
-npx medusa exec ./src/scripts/seed-suggestive-selling.ts
+pnpm exec medusa exec ./src/scripts/seed-suggestive-selling.ts
 ```
-Tạo 6 mapping Tier-2: `Rackets→Strings/Grips/Bags`, `Shoes→Socks/Insoles`, `Shuttlecocks→Tubes`.
-(Chạy **sau** bước 4 vì cần categories tồn tại trước.)
+Tạo 6 mapping Tier-2 và 5 Tier-1 manual product rules mẫu. Chạy **sau** bước 4
+vì script resolve category/product theo name và handle.
+
+> Cẩn thận: mỗi lần chạy, script xóa toàn bộ `CategoryComplementMapping` và toàn
+> bộ product-level manual rules hiện có rồi tạo lại dữ liệu mẫu. Chỉ chạy trên DB
+> mới hoặc khi chủ động muốn reset Suggestive Selling về bộ mẫu. Không chạy trên
+> production hoặc DB đã được admin cấu hình thủ công.
+
+## Seed và data scripts
+
+Tất cả lệnh dưới đây chạy từ `hf-medusa-store/apps/backend`.
+
+| Script | Cách chạy | Khi nào cần chạy | Tác động |
+|---|---|---|---|
+| `src/migration-scripts/initial-data-seed.ts` | Tự chạy một lần qua `pnpm exec medusa db:migrate` | Setup DB mới | Tạo store, region, API key, fulfillment, 9 categories, 21 products và inventory. Nếu đã có `Default Sales Channel` thì bỏ qua toàn bộ. |
+| `src/migration-scripts/migrate-suggestion-rule-source-products.ts` | Tự chạy một lần qua `pnpm exec medusa db:migrate` | Khi pull thay đổi chuyển `source_product_id` sang managed Module Link | Chuyển link legacy sang bảng pivot `suggestion_rule_product`, sau đó xóa cột cũ. Không chạy tay. |
+| `src/scripts/seed-suggestive-selling.ts` | `pnpm exec medusa exec ./src/scripts/seed-suggestive-selling.ts` | Sau catalog seed trên DB mới, hoặc khi muốn reset dữ liệu gợi ý về mẫu | Replace toàn bộ category complement mappings và product-level manual rules. Có thể làm mất config tạo từ Admin. |
+| `src/scripts/demo-cache-invalidation.ts` | `pnpm exec medusa exec ./src/scripts/demo-cache-invalidation.ts` | Chỉ khi dev/test cơ chế invalidation với Redis | Không phải seed DB. Tạo cache key demo, emit `cart.updated`, kiểm tra key bị xóa rồi in `PASS/FAIL`. |
+
+### Chạy theo tình huống
+
+**Clone/setup DB mới:**
+```bash
+pnpm exec medusa db:migrate
+pnpm exec medusa exec ./src/scripts/seed-suggestive-selling.ts
+```
+
+**Pull code có migration/model/link mới:**
+```bash
+pnpm exec medusa db:migrate
+```
+Không chạy lại suggestive seed nếu muốn giữ rules admin đã cấu hình.
+
+**Chủ động reset Suggestive Selling về dữ liệu mẫu:**
+```bash
+pnpm exec medusa exec ./src/scripts/seed-suggestive-selling.ts
+```
+
+**Kiểm tra cache invalidation khi phát triển:**
+```bash
+pnpm exec medusa exec ./src/scripts/demo-cache-invalidation.ts
+```
+
+Nếu sửa danh sách sản phẩm trong `initial-data-seed.ts` sau khi DB đã seed, chạy
+`db:migrate` sẽ không bổ sung sản phẩm mới. Hãy tạo seed/migration mới cho phần dữ
+liệu bổ sung, hoặc wipe DB dev và setup lại. Không dùng `pnpm backend:seed`: backend
+hiện không khai báo task `seed` tương ứng.
 
 ## 6. Tạo tài khoản admin
 ```bash
-npx medusa user -e admin@hf.local -p 'supersecret123'
+pnpm exec medusa user -e admin@hf.local -p 'supersecret123'
 ```
 
 ## 7. Chạy backend
@@ -95,9 +144,10 @@ docker exec hf_medusa_postgres psql -U hfmedusa -d postgres -c "CREATE DATABASE 
 ## Lệnh hay dùng
 | Việc | Lệnh (trong `apps/backend`) |
 |------|------------------------------|
-| Migrate + seed catalog | `npx medusa db:migrate` |
-| Seed mapping gợi ý | `npx medusa exec ./src/scripts/seed-suggestive-selling.ts` |
-| Tạo admin | `npx medusa user -e <email> -p <pass>` |
-| Sinh migration sau khi sửa model | `npx medusa db:generate suggestiveSelling` |
+| Migrate + auto-run data migrations pending | `pnpm exec medusa db:migrate` |
+| Reset dữ liệu gợi ý về mẫu | `pnpm exec medusa exec ./src/scripts/seed-suggestive-selling.ts` |
+| Test cache invalidation | `pnpm exec medusa exec ./src/scripts/demo-cache-invalidation.ts` |
+| Tạo admin | `pnpm exec medusa user -e <email> -p <pass>` |
+| Sinh migration sau khi sửa model | `pnpm exec medusa db:generate suggestiveSelling` |
 | Chạy backend (từ gốc) | `pnpm backend:dev` |
 | Chạy storefront (từ gốc) | `pnpm storefront:dev` |
