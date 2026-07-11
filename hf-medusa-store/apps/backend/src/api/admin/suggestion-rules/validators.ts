@@ -1,11 +1,5 @@
 import { z } from '@medusajs/framework/zod'
 
-/**
- * Zod validators for admin suggestion-rule APIs (SRS Ã‚Â§6.1).
- * validateAndTransformBody (see src/api/middlewares.ts) parses the request body
- * with these and populates req.validatedBody.
- */
-
 const RuleItemInput = z.object({
   suggested_product_id: z.string().min(1),
   display_order: z.number().int().default(0),
@@ -19,7 +13,7 @@ const CartConditionInput = z.discriminatedUnion('condition_type', [
   z.object({ condition_type: z.literal('consumable_upsell'), condition_params: z.object({ consumable_category_ids: z.array(z.string().min(1)).default([]), max_quantity: z.number().int().nonnegative().default(1) }) }),
 ])
 
-export const CreateSuggestionRuleSchema = z.object({
+const SuggestionRuleFields = z.object({
   name: z.string().min(1),
   type: z.enum(['product', 'cart']),
   tier: z.enum(['manual', 'category', 'behavioral']).default('manual'),
@@ -32,8 +26,19 @@ export const CreateSuggestionRuleSchema = z.object({
   conditions: z.array(CartConditionInput).default([]),
 })
 
-// All fields optional on update; items/conditions (if provided) replace existing.
-export const UpdateSuggestionRuleSchema = CreateSuggestionRuleSchema.partial()
+function enforceRuleBoundary(value: any, context: z.RefinementCtx) {
+  if (value.type === 'product' && value.conditions?.length) {
+    context.addIssue({ code: 'custom', path: ['conditions'], message: 'Product-level rules cannot have cart conditions.' })
+  }
+  if (value.type === 'cart') {
+    if (value.source_product_ids?.length) context.addIssue({ code: 'custom', path: ['source_product_ids'], message: 'Cart-level rules cannot have source products.' })
+    if (value.items?.length) context.addIssue({ code: 'custom', path: ['items'], message: 'Cart-level rules generate candidates dynamically and cannot have fixed items.' })
+    if (!value.conditions?.length) context.addIssue({ code: 'custom', path: ['conditions'], message: 'Cart-level rules require at least one condition.' })
+  }
+}
+
+export const CreateSuggestionRuleSchema = SuggestionRuleFields.superRefine(enforceRuleBoundary)
+export const UpdateSuggestionRuleSchema = SuggestionRuleFields.partial().superRefine(enforceRuleBoundary)
 
 export type CreateSuggestionRuleBody = z.infer<typeof CreateSuggestionRuleSchema>
 export type UpdateSuggestionRuleBody = z.infer<typeof UpdateSuggestionRuleSchema>
